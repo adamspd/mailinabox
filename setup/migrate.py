@@ -196,6 +196,16 @@ def migration_15(env):
 	shell("check_call", ["sqlite3", db, "ALTER TABLE users ADD COLUMN quota TEXT NOT NULL DEFAULT '0';"])
 
 
+def migration_16(env):
+	# Add table for FIDO2/WebAuthn credentials.
+	db = os.path.join(env["STORAGE_ROOT"], 'mail/users.sqlite')
+	shell("check_call", ["sqlite3", db, "CREATE TABLE webauthn_credentials (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, credential_id TEXT NOT NULL, public_key TEXT NOT NULL, sign_count INTEGER DEFAULT 0, transports TEXT, label TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE);"])
+
+def migration_17(env):
+	# Add table for transient WebAuthn challenge storage (replaces in-memory dict).
+	db = os.path.join(env["STORAGE_ROOT"], 'mail/users.sqlite')
+	shell("check_call", ["sqlite3", db, "CREATE TABLE IF NOT EXISTS webauthn_challenges (key TEXT PRIMARY KEY, options BLOB NOT NULL, expires_at DATETIME NOT NULL);"])
+
 ###########################################################
 
 def get_current_migration():
