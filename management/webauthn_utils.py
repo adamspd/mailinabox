@@ -108,7 +108,11 @@ def begin_registration(email, env, rp_id, rp_name):
     # Simple user handle (using email as ID for simplicity, though internal ID is better strictly speaking, 
     # but existing auth uses email heavily)
     # Using byte representation of email for user_id in WebAuthn
-    user_id_bytes = email.encode('utf-8')
+    if isinstance(email, bytes):
+        user_id_bytes = email
+        email = email.decode('utf-8') # Ensure email is string for user_name
+    else:
+        user_id_bytes = email.encode('utf-8')
 
     options = generate_registration_options(
         rp_id=rp_id,
