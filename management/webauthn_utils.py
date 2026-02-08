@@ -27,7 +27,7 @@ def get_webauthn_credentials(email, env):
     """Retrieve all WebAuthn credentials for a user."""
     c = open_database(env)
     c.execute(
-        "SELECT id, credential_id, public_key, sign_count, transports, label, created_at FROM webauthn_credentials JOIN users ON webauthn_credentials.user_id = users.id WHERE users.email=?",
+        "SELECT webauthn_credentials.id, credential_id, public_key, sign_count, transports, label, created_at FROM webauthn_credentials JOIN users ON webauthn_credentials.user_id = users.id WHERE users.email=?",
         (email,),
     )
     credentials = []
