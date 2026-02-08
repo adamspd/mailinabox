@@ -558,7 +558,9 @@ def webauthn_register_begin():
 		webauthn_challenges[email] = options
 		return json.loads(webauthn_utils.options_to_json(options))
 	except Exception as e:
-		return (str(e), 400)
+		import traceback
+		app.logger.error(traceback.format_exc())
+		return (str(e) + "\n" + traceback.format_exc(), 400)
 
 @app.route('/mfa/webauthn/register/complete', methods=['POST'])
 @authorized_personnel_only
