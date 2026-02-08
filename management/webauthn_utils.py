@@ -108,17 +108,18 @@ def begin_registration(email, env, rp_id, rp_name):
     # Simple user handle (using email as ID for simplicity, though internal ID is better strictly speaking, 
     # but existing auth uses email heavily)
     # Using byte representation of email for user_id in WebAuthn
+    # The webauthn library's generate_registration_options function expects user_id to be a string
+    # and will encode it to bytes internally.
     if isinstance(email, bytes):
-        user_id_bytes = email
-        email = email.decode('utf-8') # Ensure email is string for user_name
+        user_id = email.decode('utf-8')
     else:
-        user_id_bytes = email.encode('utf-8')
+        user_id = email
 
     options = generate_registration_options(
         rp_id=rp_id,
         rp_name=rp_name,
-        user_id=user_id_bytes,
-        user_name=email,
+        user_id=user_id,
+        user_name=str(user_id), # Ensure user_name is also a string
         exclude_credentials=[
             {"id": base64url_to_bytes(cred["credential_id"]), "transports": cred["transports"]}
             for cred in existing_credentials
