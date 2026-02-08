@@ -23,7 +23,6 @@ from mailconfig import get_mail_user_privileges, add_remove_mail_user_privilege
 from mailconfig import get_mail_aliases, get_mail_aliases_ex, get_mail_domains, add_mail_alias, remove_mail_alias
 from mailconfig import get_mail_quota, set_mail_quota
 from mfa import get_public_mfa_state, provision_totp, validate_totp_secret, enable_mfa, disable_mfa
-import webauthn_utils
 import contextlib
 
 env = utils.load_environment()
@@ -535,126 +534,6 @@ def totp_post_disable():
 		return "OK"
 	# error
 	return ("Invalid user or MFA id.", 400)
-
-# WebAuthn
-# --------
-
-# Store challenges temporarily in memory (for simplicity in this implementation)
-# In production with multiple workers, this should be in a DB/Redis/File.
-# Since default config is 1 worker, this is acceptable for now.
-webauthn_challenges = {}
-
-@app.route('/mfa/webauthn/register/begin', methods=['POST'])
-@authorized_personnel_only
-def webauthn_register_begin():
-	email = request.user_email
-	try:
-		options = webauthn_utils.begin_registration(
-			email,
-			env,
-			rp_id=env['PRIMARY_HOSTNAME'],
-			rp_name="Mail-in-a-Box"
-		)
-		# Store challenge
-		webauthn_challenges[email] = options
-		return json.loads(webauthn_utils.options_to_json(options))
-	except Exception as e:
-		return (str(e), 400)
-
-@app.route('/mfa/webauthn/register/complete', methods=['POST'])
-@authorized_personnel_only
-def webauthn_register_complete():
-	email = request.user_email
-	if email not in webauthn_challenges:
-		return ("No registration session found. Please start over.", 400)
-	
-	options = webauthn_challenges.pop(email)
-	response_data = request.data.decode('utf-8')
-	label = request.args.get('label', 'WebAuthn Key')
-
-	try:
-		cred_data = webauthn_utils.complete_registration(
-			email,
-			options,
-			response_data,
-			env,
-			rp_id=env['PRIMARY_HOSTNAME']
-		)
-		webauthn_utils.add_webauthn_credential(email, cred_data, label, env)
-		return "OK"
-	except Exception as e:
-		return (str(e), 400)
-
-@app.route('/login/webauthn/begin', methods=['POST'])
-def webauthn_login_begin():
-	email = request.form.get('email')
-	if not email:
-		return ("Email is required.", 400)
-	
-	try:
-		options = webauthn_utils.begin_authentication(
-			email,
-			env,
-			rp_id=env['PRIMARY_HOSTNAME']
-		)
-		# Store challenge keyed by email (careful with race conditions/spoofing if not verifying email ownership yet? 
-		# But this is just begin step. Verification happens in complete.
-		# Ideally pass a session token or similar, but for stateless API 
-		# we might need a temporary token or use 1 worker assumption)
-		webauthn_challenges["login_" + email] = options
-		return json.loads(webauthn_utils.options_to_json(options))
-	except ValueError:
-		# User might not have webauthn enabled, fail silently-ish or return specific error?
-		# Standard practice: don't reveal too much, but here we need to know if we can proceed.
-		return ("WebAuthn not available for this user.", 400)
-	except Exception as e:
-		return (str(e), 400)
-
-@app.route('/login/webauthn/complete', methods=['POST'])
-def webauthn_login_complete():
-	email = request.args.get('email') # Or from body? usually passed alongside
-	if not email:
-		return ("Email is required.", 400)
-		
-	challenge_key = "login_" + email
-	if challenge_key not in webauthn_challenges:
-		return ("No login session found. Please start over.", 400)
-
-	options = webauthn_challenges.pop(challenge_key)
-	response_data = request.data.decode('utf-8')
-
-	try:
-		# Verify
-		user_id = webauthn_utils.complete_authentication(
-			options,
-			response_data,
-			env,
-			rp_id=env['PRIMARY_HOSTNAME']
-		)
-		
-		# Issue Session Key
-		# We need to get privileges for this user.
-		# Note: complete_authentication verified the signature against the DB credential.
-		# user_id returned is the internal integer ID. We need the email for session creation
-		# which we already have.
-		
-		# Re-verify email corresponds to user_id just in case?
-		# (Logic in complete_authentication looks up credential by ID and returns associated user_id)
-		
-		privs = get_mail_user_privileges(email, env)
-		if isinstance(privs, tuple): raise ValueError(privs[0]) # Should not happen if user exists
-
-		resp = {
-			"status": "ok",
-			"email": email,
-			"privileges": privs,
-			"api_key": auth_service.create_session_key(email, env, type='login'),
-		}
-		app.logger.info("New WebAuthn login session created for %s", email)
-		return json_response(resp)
-
-	except Exception as e:
-		return (str(e), 400)
 
 # WEB
 
