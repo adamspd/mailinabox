@@ -12,6 +12,8 @@ from webauthn import (
     base64url_to_bytes,
 )
 from webauthn.helpers.structs import (
+    AuthenticatorAttestationResponse,
+    AuthenticatorAssertionResponse,
     AuthenticatorSelectionCriteria,
     UserVerificationRequirement,
     RegistrationCredential,
@@ -141,12 +143,22 @@ def complete_registration(email, options, response_data, env, rp_id, expected_or
         origins.append(expected_origin)
 
     try:
-        # Pass raw JSON string directly — verify_registration_response will use
-        # parse_registration_credential_json which handles base64url correctly.
-        # (RegistrationCredential.parse_raw uses Pydantic's standard base64 decoder
-        #  which chokes on base64url characters like '-' and '_'.)
+        # Manually parse the JSON and construct RegistrationCredential with
+        # base64url_to_bytes. RegistrationCredential.parse_raw() uses Pydantic's
+        # standard base64 decoder which chokes on base64url characters ('-', '_'),
+        # and the older py_webauthn doesn't accept raw strings.
+        data = json.loads(response_data)
+        reg_cred = RegistrationCredential(
+            id=data['id'],
+            raw_id=base64url_to_bytes(data['rawId']),
+            response=AuthenticatorAttestationResponse(
+                client_data_json=base64url_to_bytes(data['response']['clientDataJSON']),
+                attestation_object=base64url_to_bytes(data['response']['attestationObject']),
+            ),
+            type=data.get('type', 'public-key'),
+        )
         credential = verify_registration_response(
-            credential=response_data,
+            credential=reg_cred,
             expected_challenge=base64url_to_bytes(options.challenge),
             expected_origin=origins,
             expected_rp_id=rp_id,
@@ -211,10 +223,21 @@ def complete_authentication(options, response_data, env, rp_id, expected_origin=
         origins.append(expected_origin)
 
     try:
-        # Pass raw JSON string directly — verify_authentication_response will use
-        # parse_authentication_credential_json which handles base64url correctly.
+        # Manually construct AuthenticationCredential with base64url decoding.
+        # The older py_webauthn doesn't accept raw strings.
+        auth_cred = AuthenticationCredential(
+            id=parsed_response['id'],
+            raw_id=base64url_to_bytes(parsed_response['rawId']),
+            response=AuthenticatorAssertionResponse(
+                client_data_json=base64url_to_bytes(parsed_response['response']['clientDataJSON']),
+                authenticator_data=base64url_to_bytes(parsed_response['response']['authenticatorData']),
+                signature=base64url_to_bytes(parsed_response['response']['signature']),
+                user_handle=base64url_to_bytes(parsed_response['response']['userHandle']) if parsed_response['response'].get('userHandle') else None,
+            ),
+            type=parsed_response.get('type', 'public-key'),
+        )
         verification = verify_authentication_response(
-            credential=response_data,
+            credential=auth_cred,
             expected_challenge=base64url_to_bytes(options.challenge),
             expected_origin=origins,
             expected_rp_id=rp_id,
