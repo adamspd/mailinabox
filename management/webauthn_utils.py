@@ -159,7 +159,7 @@ def complete_registration(email, options, response_data, env, rp_id, expected_or
         )
         credential = verify_registration_response(
             credential=reg_cred,
-            expected_challenge=base64url_to_bytes(options.challenge),
+            expected_challenge=options.challenge,
             expected_origin=origins,
             expected_rp_id=rp_id,
             require_user_verification=False, # Depends on requirements
@@ -238,7 +238,7 @@ def complete_authentication(options, response_data, env, rp_id, expected_origin=
         )
         verification = verify_authentication_response(
             credential=auth_cred,
-            expected_challenge=base64url_to_bytes(options.challenge),
+            expected_challenge=options.challenge,
             expected_origin=origins,
             expected_rp_id=rp_id,
             credential_public_key=base64url_to_bytes(stored_cred["public_key"]),
