@@ -133,13 +133,22 @@ def begin_registration(email, env, rp_id, rp_name):
     )
     return options
 
-def complete_registration(email, options, response_data, env, rp_id):
+def complete_registration(email, options, response_data, env, rp_id, expected_origin=None):
     """Verify registration response and store credential."""
+    # Build list of accepted origins: the RP ID domain and any explicitly provided origin
+    origins = [f"https://{rp_id}"]
+    if expected_origin and expected_origin not in origins:
+        origins.append(expected_origin)
+
     try:
+        # Pass raw JSON string directly — verify_registration_response will use
+        # parse_registration_credential_json which handles base64url correctly.
+        # (RegistrationCredential.parse_raw uses Pydantic's standard base64 decoder
+        #  which chokes on base64url characters like '-' and '_'.)
         credential = verify_registration_response(
-            credential=RegistrationCredential.parse_raw(response_data),
+            credential=response_data,
             expected_challenge=base64url_to_bytes(options.challenge),
-            expected_origin=f"https://{rp_id}", # Or configure globally
+            expected_origin=origins,
             expected_rp_id=rp_id,
             require_user_verification=False, # Depends on requirements
         )
@@ -184,28 +193,30 @@ def begin_authentication(email, env, rp_id):
     )
     return options
 
-def complete_authentication(options, response_data, env, rp_id):
+def complete_authentication(options, response_data, env, rp_id, expected_origin=None):
     """Verify authentication response."""
     
-    # Parse response first to get credential ID
-    # We need to find the stored public key for this credential ID
-    
-    # This part is tricky because we need to parse JSON first to look up DB
-    # or use the library's struct
-    
-    auth_cred = AuthenticationCredential.parse_raw(response_data)
-    credential_id_b64 = base64.urlsafe_b64encode(auth_cred.id).decode('ascii').rstrip('=')
+    # Parse response JSON to extract credential ID for DB lookup
+    parsed_response = json.loads(response_data)
+    credential_id_b64 = parsed_response.get("id", "")
     
     # Retrieve stored credential
     stored_cred = get_credential_by_id(credential_id_b64, env)
     if not stored_cred:
         raise ValueError("Credential not found.")
 
+    # Build list of accepted origins
+    origins = [f"https://{rp_id}"]
+    if expected_origin and expected_origin not in origins:
+        origins.append(expected_origin)
+
     try:
+        # Pass raw JSON string directly — verify_authentication_response will use
+        # parse_authentication_credential_json which handles base64url correctly.
         verification = verify_authentication_response(
-            credential=auth_cred,
+            credential=response_data,
             expected_challenge=base64url_to_bytes(options.challenge),
-            expected_origin=f"https://{rp_id}",
+            expected_origin=origins,
             expected_rp_id=rp_id,
             credential_public_key=base64url_to_bytes(stored_cred["public_key"]),
             credential_current_sign_count=stored_cred["sign_count"],

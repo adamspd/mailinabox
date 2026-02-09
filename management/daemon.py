@@ -590,7 +590,8 @@ def webauthn_register_complete():
 			options,
 			response_data,
 			env,
-			rp_id=get_webauthn_rp_id()
+			rp_id=get_webauthn_rp_id(),
+			expected_origin=request.headers.get('Origin')
 		)
 		webauthn_utils.add_webauthn_credential(email, cred_data, label, env)
 		return "OK"
@@ -641,7 +642,8 @@ def webauthn_login_complete():
 			options,
 			response_data,
 			env,
-			rp_id=get_webauthn_rp_id()
+			rp_id=get_webauthn_rp_id(),
+			expected_origin=request.headers.get('Origin')
 		)
 		
 		# Issue Session Key
