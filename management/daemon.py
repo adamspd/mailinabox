@@ -30,6 +30,17 @@ env = utils.load_environment()
 
 auth_service = auth.AuthService()
 
+# Helper function to extract parent domain for WebAuthn cross-subdomain support
+def get_webauthn_rp_id():
+	"""Extract parent domain from PRIMARY_HOSTNAME for WebAuthn RP ID.
+	This allows passkeys to work across all subdomains.
+	Example: 'mail.adamspierredavid.com' -> 'adamspierredavid.com'
+	"""
+	hostname = env['PRIMARY_HOSTNAME']
+	hostname_parts = hostname.split('.')
+	# Return parent domain (last two parts) if subdomain exists, otherwise full hostname
+	return '.'.join(hostname_parts[-2:]) if len(hostname_parts) >= 2 else hostname
+
 # We may deploy via a symbolic link, which confuses flask's template finding.
 me = __file__
 with contextlib.suppress(OSError):
@@ -551,7 +562,7 @@ def webauthn_register_begin():
 		options = webauthn_utils.begin_registration(
 			email,
 			env,
-			rp_id=env['PRIMARY_HOSTNAME'],
+			rp_id=get_webauthn_rp_id(),
 			rp_name="Mail-in-a-Box"
 		)
 		# Store challenge
@@ -579,7 +590,7 @@ def webauthn_register_complete():
 			options,
 			response_data,
 			env,
-			rp_id=env['PRIMARY_HOSTNAME']
+			rp_id=get_webauthn_rp_id()
 		)
 		webauthn_utils.add_webauthn_credential(email, cred_data, label, env)
 		return "OK"
@@ -596,7 +607,7 @@ def webauthn_login_begin():
 		options = webauthn_utils.begin_authentication(
 			email,
 			env,
-			rp_id=env['PRIMARY_HOSTNAME']
+			rp_id=get_webauthn_rp_id()
 		)
 		# Store challenge keyed by email (careful with race conditions/spoofing if not verifying email ownership yet? 
 		# But this is just begin step. Verification happens in complete.
@@ -630,7 +641,7 @@ def webauthn_login_complete():
 			options,
 			response_data,
 			env,
-			rp_id=env['PRIMARY_HOSTNAME']
+			rp_id=get_webauthn_rp_id()
 		)
 		
 		# Issue Session Key
