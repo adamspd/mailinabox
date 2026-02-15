@@ -18,7 +18,9 @@ from webauthn.helpers.structs import (
     UserVerificationRequirement,
     RegistrationCredential,
     AuthenticationCredential,
+    AuthenticationCredential,
     AuthenticatorAttachment,
+    ResidentKeyRequirement,
 )
 
 from mailconfig import open_database, get_mail_users
