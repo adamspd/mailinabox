@@ -64,11 +64,34 @@ def get_user_email_by_id(user_id, env):
 
 def get_webauthn_credentials(email, env):
     """Retrieve all WebAuthn credentials for a user."""
-    c = open_database(env)
-    c.execute(
-        "SELECT webauthn_credentials.id, credential_id, public_key, sign_count, transports, label, created_at, last_used_at FROM webauthn_credentials JOIN users ON webauthn_credentials.user_id = users.id WHERE users.email=?",
-        (email,),
-    )
+    conn, c = open_database(env, with_connection=True) # Get connection to potentially re-use for schema update and retry
+    
+    # First get user_id
+    c.execute("SELECT id FROM users WHERE email=?", (email,))
+    user_row = c.fetchone()
+    if not user_row:
+        return [] # User not found, no credentials
+
+    user_id = user_row[0]
+
+    # Self-healing: If schema update missed, try to catch it here.
+    try:
+        c.execute(
+            "SELECT id, credential_id, public_key, sign_count, transports, label, created_at, last_used_at FROM webauthn_credentials WHERE user_id=?",
+            (user_id,),
+        )
+    except sqlite3.OperationalError as e:
+        if "no such column: last_used_at" in str(e):
+            # Schema migration didn't run? Run it now.
+            ensure_webauthn_schema(env)
+            # Retry query on the same connection
+            c.execute(
+                "SELECT id, credential_id, public_key, sign_count, transports, label, created_at, last_used_at FROM webauthn_credentials WHERE user_id=?",
+                (user_id,),
+            )
+        else:
+            raise e
+            
     credentials = []
     for row in c.fetchall():
         transports = json.loads(row[4]) if row[4] else []
