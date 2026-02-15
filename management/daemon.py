@@ -41,6 +41,9 @@ def get_webauthn_rp_id():
 	# Return parent domain (last two parts) if subdomain exists, otherwise full hostname
 	return '.'.join(hostname_parts[-2:]) if len(hostname_parts) >= 2 else hostname
 
+# Ensure WebAuthn table/schema is up to date immediately on load
+webauthn_utils.ensure_webauthn_schema(env)
+
 # We may deploy via a symbolic link, which confuses flask's template finding.
 me = __file__
 with contextlib.suppress(OSError):
@@ -968,8 +971,6 @@ def log_failed_login(request):
 # APP
 
 if __name__ == '__main__':
-    # Ensure WebAuthn table/schema is up to date
-	webauthn_utils.ensure_webauthn_schema(env)
 
 	if "DEBUG" in os.environ:
 		# Turn on Flask debugging.
