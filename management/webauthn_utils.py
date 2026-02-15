@@ -62,6 +62,7 @@ def get_user_email_by_id(user_id, env):
     c = open_database(env)
     c.execute("SELECT email FROM users WHERE id=?", (user_id,))
     row = c.fetchone()
+    print(f"DEBUG: get_user_email_by_id({user_id}) -> {row[0] if row else 'None'}")
     return row[0] if row else None
 
 def get_webauthn_credentials(email, env):
@@ -104,8 +105,8 @@ def get_webauthn_credentials(email, env):
             "sign_count": row[3],
             "transports": transports,
             "label": row[5],
-            "created_at": row[6],
-            "last_used_at": row[7],
+            "created_at": str(row[6]) if row[6] else None,
+            "last_used_at": str(row[7]) if row[7] else None,
         })
     return credentials
 
