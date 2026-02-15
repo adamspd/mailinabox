@@ -25,11 +25,48 @@ from mailconfig import open_database, get_mail_users
 
 # Function to handle database operations for WebAuthn credentials
 
+def ensure_webauthn_schema(env):
+    """Ensure the WebAuthn table and columns exist."""
+    conn, c = open_database(env, with_connection=True)
+    # 1. Create table if not exists
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS webauthn_credentials (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            credential_id TEXT NOT NULL UNIQUE,
+            public_key TEXT NOT NULL,
+            sign_count INTEGER NOT NULL,
+            transports TEXT,
+            label TEXT,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            last_used_at DATETIME,
+            FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+        )
+    """)
+
+    # 2. Migration: ensure last_used_at exists even on older databases.
+    c.execute("PRAGMA table_info(webauthn_credentials)")
+    columns = [row[1] for row in c.fetchall()]
+    if "last_used_at" not in columns:
+        try:
+            c.execute("ALTER TABLE webauthn_credentials ADD COLUMN last_used_at DATETIME")
+        except sqlite3.OperationalError:
+            # If another migration added the column concurrently, ignore the error.
+            pass
+    conn.commit()
+
+def get_user_email_by_id(user_id, env):
+    """Retrieve user email by integer ID."""
+    c = open_database(env)
+    c.execute("SELECT email FROM users WHERE id=?", (user_id,))
+    row = c.fetchone()
+    return row[0] if row else None
+
 def get_webauthn_credentials(email, env):
     """Retrieve all WebAuthn credentials for a user."""
     c = open_database(env)
     c.execute(
-        "SELECT webauthn_credentials.id, credential_id, public_key, sign_count, transports, label, created_at FROM webauthn_credentials JOIN users ON webauthn_credentials.user_id = users.id WHERE users.email=?",
+        "SELECT webauthn_credentials.id, credential_id, public_key, sign_count, transports, label, created_at, last_used_at FROM webauthn_credentials JOIN users ON webauthn_credentials.user_id = users.id WHERE users.email=?",
         (email,),
     )
     credentials = []
@@ -43,6 +80,7 @@ def get_webauthn_credentials(email, env):
             "transports": transports,
             "label": row[5],
             "created_at": row[6],
+            "last_used_at": row[7],
         })
     return credentials
 
@@ -78,7 +116,7 @@ def add_webauthn_credential(email, credential_data, label, env):
     # Insert credential
     conn, c = open_database(env, with_connection=True)
     c.execute(
-        "INSERT INTO webauthn_credentials (user_id, credential_id, public_key, sign_count, transports, label) VALUES (?, ?, ?, ?, ?, ?)",
+        "INSERT INTO webauthn_credentials (user_id, credential_id, public_key, sign_count, transports, label, last_used_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
         (
             user_id,
             credential_data["credential_id"],
@@ -86,19 +124,39 @@ def add_webauthn_credential(email, credential_data, label, env):
             credential_data["sign_count"],
             json.dumps(credential_data.get("transports", [])),
             label,
+            datetime.now(),  # Initialize last_used_at when the credential is first registered
         ),
     )
     conn.commit()
 
-def update_credential_sign_count(credential_id, new_sign_count, env):
-    """Update the signature count for a credential."""
+
+def update_credential_sign_count(credential_id, sign_count, env):
+    """Update the sign count and last_used_at for a credential."""
+    # credential_id is base64url encoded
     conn, c = open_database(env, with_connection=True)
     c.execute(
-        "UPDATE webauthn_credentials SET sign_count=? WHERE credential_id=?",
-        (new_sign_count, credential_id),
+        "UPDATE webauthn_credentials SET sign_count=?, last_used_at=? WHERE credential_id=?",
+        (sign_count, datetime.now(), credential_id),
     )
     conn.commit()
 
+def remove_webauthn_credential(email, credential_id, env):
+    """Remove a WebAuthn credential by ID, ensuring ownership."""
+    # Resolve email to user_id to ensure ownership
+    c = open_database(env)
+    # Resolve email to user_id to ensure ownership using a single connection
+    conn, c = open_database(env, with_connection=True)
+    c.execute("SELECT id FROM users WHERE email=?", (email,))
+    user_row = c.fetchone()
+    if not user_row:
+        return False  # User not found
+    user_id = user_row[0]
+    c.execute(
+        "DELETE FROM webauthn_credentials WHERE credential_id=? AND user_id=?",
+        (credential_id, user_id),
+    )
+    conn.commit()
+    return c.rowcount > 0
 
 # WebAuthn Logic Wrappers
 
@@ -128,9 +186,8 @@ def begin_registration(email, env, rp_id, rp_name):
         ],
         authenticator_selection=AuthenticatorSelectionCriteria(
             user_verification=UserVerificationRequirement.PREFERRED,
-            resident_key=None, #/Requirement.PREFERRED,
-            authenticator_attachment=AuthenticatorAttachment.CROSS_PLATFORM, 
-
+            resident_key=ResidentKeyRequirement.PREFERRED,
+            authenticator_attachment=None, # Allow both Platform (Touch ID/Face ID) and Cross-Platform (YubiKey)
         ),
     )
     return options
@@ -189,19 +246,23 @@ def begin_authentication(email, env, rp_id):
     """Generate authentication options."""
     # If email provided, we can allow-list credentials.
     # If no email (usernameless flow), we wouldn't filter (Passwordless).
-    # Assuming email is provided for now as per requirements.
     
-    existing_credentials = get_webauthn_credentials(email, env)
-    if not existing_credentials:
-         raise ValueError("No WebAuthn credentials found for this user.")
+    allow_credentials = None
+    if email:
+        existing_credentials = get_webauthn_credentials(email, env)
+        if existing_credentials:
+            allow_credentials = [
+                {"id": base64url_to_bytes(cred["credential_id"]), "transports": cred["transports"]}
+                for cred in existing_credentials
+            ]
+        else:
+             # If email is provided but no credentials found, we return error
+             raise ValueError("No WebAuthn credentials found for this user.")
 
     options = generate_authentication_options(
         rp_id=rp_id,
-        allow_credentials=[
-            {"id": base64url_to_bytes(cred["credential_id"]), "transports": cred["transports"]}
-            for cred in existing_credentials
-        ],
-         user_verification=UserVerificationRequirement.PREFERRED,
+        allow_credentials=allow_credentials,
+        user_verification=UserVerificationRequirement.PREFERRED if email else UserVerificationRequirement.REQUIRED,
     )
     return options
 
@@ -251,4 +312,6 @@ def complete_authentication(options, response_data, env, rp_id, expected_origin=
     # Update sign count
     update_credential_sign_count(credential_id_b64, verification.new_sign_count, env)
     
+    # Return user_id (which is integer in DB) but also fetch email for session creation
+    # The caller needs to resolve user_id integer to email if they don't have it (Resident Key case)
     return stored_cred["user_id"]
