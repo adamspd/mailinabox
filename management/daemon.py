@@ -10,7 +10,7 @@
 # DEBUG=1 management/daemon.py
 # service mailinabox start # when done debugging, start it up again
 
-import os, os.path, re, json, time
+import os, os.path, re, json, time, uuid
 import multiprocessing.pool
 
 from functools import wraps
@@ -23,11 +23,26 @@ from mailconfig import get_mail_user_privileges, add_remove_mail_user_privilege
 from mailconfig import get_mail_aliases, get_mail_aliases_ex, get_mail_domains, add_mail_alias, remove_mail_alias
 from mailconfig import get_mail_quota, set_mail_quota
 from mfa import get_public_mfa_state, provision_totp, validate_totp_secret, enable_mfa, disable_mfa
+import webauthn_utils
 import contextlib
 
 env = utils.load_environment()
 
 auth_service = auth.AuthService()
+
+# Helper function to extract parent domain for WebAuthn cross-subdomain support
+def get_webauthn_rp_id():
+	"""Extract parent domain from PRIMARY_HOSTNAME for WebAuthn RP ID.
+	This allows passkeys to work across all subdomains.
+	Example: 'mail.adamspierredavid.com' -> 'adamspierredavid.com'
+	"""
+	hostname = env['PRIMARY_HOSTNAME']
+	hostname_parts = hostname.split('.')
+	# Return parent domain (last two parts) if subdomain exists, otherwise full hostname
+	return '.'.join(hostname_parts[-2:]) if len(hostname_parts) >= 2 else hostname
+
+# Ensure WebAuthn table/schema is up to date immediately on load
+webauthn_utils.ensure_webauthn_schema(env)
 
 # We may deploy via a symbolic link, which confuses flask's template finding.
 me = __file__
@@ -174,8 +189,7 @@ def logout():
 		app.logger.info("%s logged out", email)
 	except ValueError:
 		pass
-	finally:
-		return json_response({ "status": "ok" })
+	return json_response({ "status": "ok" })
 
 # MAIL
 
@@ -535,6 +549,175 @@ def totp_post_disable():
 	# error
 	return ("Invalid user or MFA id.", 400)
 
+# WebAuthn
+# --------
+
+@app.route('/mfa/webauthn/register/begin', methods=['POST'])
+@authorized_personnel_only
+def webauthn_register_begin():
+	email = request.user_email
+	try:
+		options = webauthn_utils.begin_registration(
+			email,
+			env,
+			rp_id=get_webauthn_rp_id(),
+			rp_name="Mail-in-a-Box"
+		)
+		# Store challenge
+		webauthn_utils.clean_expired_challenges(env)
+		webauthn_utils.store_challenge(email, options, env)
+		return json.loads(webauthn_utils.options_to_json(options))
+	except Exception as e:
+		import traceback
+		app.logger.error(traceback.format_exc())
+		return (str(e) + "\n" + traceback.format_exc(), 400)
+
+@app.route('/mfa/webauthn/register/complete', methods=['POST'])
+@authorized_personnel_only
+def webauthn_register_complete():
+	email = request.user_email
+	options = webauthn_utils.get_and_delete_challenge(email, env)
+	if options is None:
+		return ("No registration session found. Please start over.", 400)
+
+	response_data = request.data.decode('utf-8')
+	label = request.args.get('label', 'WebAuthn Key')
+
+	try:
+		cred_data = webauthn_utils.complete_registration(
+			email,
+			options,
+			response_data,
+			env,
+			rp_id=get_webauthn_rp_id(),
+			expected_origin=request.headers.get('Origin')
+		)
+		webauthn_utils.add_webauthn_credential(email, cred_data, label, env)
+		return "OK"
+	except Exception as e:
+		return (str(e), 400)
+
+@app.route('/mfa/webauthn/credentials', methods=['GET'])
+@authorized_personnel_only
+def webauthn_credentials_list():
+	email = request.user_email
+	try:
+		creds = webauthn_utils.get_webauthn_credentials(email, env)
+		# Filter out sensitive data if any (public_key is fine)
+		safe_creds = []
+		for c in creds:
+			safe_creds.append({
+				"id": c["credential_id"], # base64url string
+				"label": c["label"],
+				"created_at": c["created_at"],
+				"transports": c["transports"],
+				"last_used_at": c["last_used_at"]
+			})
+		return json_response(safe_creds)
+	except Exception as e:
+		return (str(e), 400)
+
+@app.route('/mfa/webauthn/credentials/<credential_id>', methods=['DELETE'])
+@authorized_personnel_only
+def webauthn_credentials_delete(credential_id):
+	email = request.user_email
+	try:
+		# Delegate ownership and existence checks to the utility function to avoid duplicate lookups.
+		success = webauthn_utils.remove_webauthn_credential(email, credential_id, env)
+		if success:
+			return "OK"
+		else:
+			# Either the credential does not exist or access is denied.
+			return ("Credential not found or access denied.", 404)
+	except Exception as e:
+		return (str(e), 400)
+
+@app.route('/login/webauthn/begin', methods=['POST'])
+def webauthn_login_begin():
+	email = request.form.get('email')
+	# Email is OPTIONAL now for Resident Key flows
+	
+	try:
+		options = webauthn_utils.begin_authentication(
+			email,
+			env,
+			rp_id=get_webauthn_rp_id()
+		)
+		# Store challenge keyed by email if present, or a session identifier?
+		# For resident keys, we don't have an email yet.
+		# Limitation: The current global `webauthn_challenges` dict is simplistic.
+		# If user doesn't provide email, how do we key the challenge?
+		# We need to return a session ID to the client, which they return in `complete`.
+		# For this implementation, let's generate a temporary session ID.
+		session_id = str(uuid.uuid4())
+		
+		# If email is provided, we can also key by "login_<email>" for backward compat if needed,
+		# but session_id is cleaner. Client needs to handle it.
+		# Let's support both: if legacy client sends email, use email key.
+		# If new client (Resident Key), use session_id.
+		
+		key = session_id
+		if email:
+			key = "login_" + email
+
+		webauthn_utils.clean_expired_challenges(env)
+		webauthn_utils.store_challenge(key, options, env)
+		
+		resp = json.loads(webauthn_utils.options_to_json(options))
+		resp['session_id'] = key # Renamed from _session_id as per feedback
+		return json_response(resp)
+	except Exception as e:
+		return (str(e), 400)
+
+@app.route('/login/webauthn/complete', methods=['POST'])
+def webauthn_login_complete():
+	email = request.args.get('email') 
+	session_id = request.args.get('session_id')
+
+	challenge_key = None
+	if session_id:
+		challenge_key = session_id
+	elif email:
+		challenge_key = "login_" + email
+	
+	if not challenge_key:
+		return ("No login session found (or expired). Please start over.", 400)
+	options = webauthn_utils.get_and_delete_challenge(challenge_key, env)
+	if options is None:
+		return ("No login session found (or expired). Please start over.", 400)
+
+	response_data = request.data.decode('utf-8')
+
+	try:
+		# Verify
+		user_id_int = webauthn_utils.complete_authentication(
+			options,
+			response_data,
+			env,
+			rp_id=get_webauthn_rp_id(),
+			expected_origin=request.headers.get('Origin')
+		)
+		
+		# Resolve integer ID to email for session creation
+		email = webauthn_utils.get_user_email_by_id(user_id_int, env)
+		if not email:
+			return ("User not found.", 500)
+		
+		privs = get_mail_user_privileges(email, env)
+		if isinstance(privs, tuple): raise ValueError(privs[0]) # Should not happen if user exists
+
+		resp = {
+			"status": "ok",
+			"email": email,
+			"privileges": privs,
+			"api_key": auth_service.create_session_key(email, env, type='login'),
+		}
+		app.logger.info("New WebAuthn login session created for %s", email)
+		return json_response(resp)
+
+	except Exception as e:
+		return (str(e), 400)
+
 # WEB
 
 @app.route('/web/domains')
@@ -776,6 +959,7 @@ def log_failed_login(request):
 # APP
 
 if __name__ == '__main__':
+
 	if "DEBUG" in os.environ:
 		# Turn on Flask debugging.
 		app.debug = True

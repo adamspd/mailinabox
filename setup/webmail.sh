@@ -92,6 +92,19 @@ if [ $needs_update == 1 ]; then
 	tar -C ${RCM_PLUGIN_DIR} -zxf /tmp/carddav.tar.gz
 	rm -f /tmp/carddav.tar.gz
 
+	# Fix PSR-3 v3 incompatibility: Roundcube 1.6.x ships psr/log v3 which requires
+	# Stringable|string on the $message parameter and a void return type. CardDAV's
+	# RoundcubeLogger was written against PSR-3 v1/v2 and must be patched to match.
+	python3 -c "
+path = '${RCM_PLUGIN_DIR}/carddav/src/RoundcubeLogger.php'
+with open(path) as f: c = f.read()
+c2 = c.replace(
+    'public function log(\$level, \$message, array \$context = array())',
+    'public function log(\$level, \\\\Stringable|string \$message, array \$context = array()): void'
+)
+with open(path, 'w') as f: f.write(c2)
+"
+
 	# record the version we've installed
 	echo $UPDATE_KEY > ${RCM_DIR}/version
 fi
@@ -100,7 +113,14 @@ fi
 
 # Generate a secret key of PHP-string-safe characters appropriate
 # for the cipher algorithm selected below.
-SECRET_KEY=$(dd if=/dev/urandom bs=1 count=32 2>/dev/null | base64 | sed s/=//g)
+# Preserve the existing des_key across setup runs to avoid invalidating
+# all user sessions and persistent login cookies on every update.
+DES_KEY_FILE="$STORAGE_ROOT/mail/roundcube/des_key"
+if [ -f "$DES_KEY_FILE" ]; then
+	SECRET_KEY=$(cat "$DES_KEY_FILE")
+else
+	SECRET_KEY=$(dd if=/dev/urandom bs=1 count=32 2>/dev/null | base64 | sed s/=//g)
+fi
 
 # Create a configuration file.
 #
@@ -173,6 +193,13 @@ EOF
 # Create writable directories.
 mkdir -p /var/log/roundcubemail /var/tmp/roundcubemail "$STORAGE_ROOT/mail/roundcube"
 chown -R www-data:www-data /var/log/roundcubemail /var/tmp/roundcubemail "$STORAGE_ROOT/mail/roundcube"
+
+# Persist the des_key so it survives future setup runs.
+if [ ! -f "$DES_KEY_FILE" ]; then
+	echo "$SECRET_KEY" > "$DES_KEY_FILE"
+	chmod 640 "$DES_KEY_FILE"
+	chown root:www-data "$DES_KEY_FILE"
+fi
 
 # Ensure the log file monitored by fail2ban exists, or else fail2ban can't start.
 sudo -u www-data touch /var/log/roundcubemail/errors.log
