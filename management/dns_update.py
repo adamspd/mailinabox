@@ -18,6 +18,12 @@ from ssl_certificates import get_ssl_certificates, check_certificate
 # DNS but not in URLs), which are common in certain record types like for DKIM.
 DOMAIN_RE = r"^(?!\-)(?:[*][.])?(?:[a-zA-Z\d\-_]{0,62}[a-zA-Z\d_]\.){1,126}(?!\d+)[a-zA-Z\d_]{1,63}(\.?)$"
 
+# The default TTL for records in a zone, and the range of TTLs that may be
+# chosen per zone. Values are in seconds.
+DEFAULT_ZONE_TTL = 86400
+MIN_ZONE_TTL = 60
+MAX_ZONE_TTL = 604800
+
 def get_dns_domains(env):
 	# Add all domain names in use by email users and mail aliases, any
 	# domains we serve web for (except www redirects because that would
@@ -63,13 +69,15 @@ def do_dns_update(env, force=False):
 	os.makedirs('/etc/nsd/zones', exist_ok=True)
 	zonefiles = []
 	updated_domains = []
+	zone_ttls = get_zone_ttls(env)
 	for (domain, zonefile, records) in build_zones(env):
 		# The final set of files will be signed.
 		zonefiles.append((domain, zonefile + ".signed"))
 
 		# See if the zone has changed, and if so update the serial number
 		# and write the zone file.
-		if not write_nsd_zone(domain, "/etc/nsd/zones/" + zonefile, records, env, force):
+		ttl = zone_ttls.get(domain, DEFAULT_ZONE_TTL)
+		if not write_nsd_zone(domain, "/etc/nsd/zones/" + zonefile, records, ttl, env, force):
 			# Zone was not updated. There were no changes.
 			continue
 
@@ -471,7 +479,7 @@ def build_sshfp_records():
 
 ########################################################################
 
-def write_nsd_zone(domain, zonefile, records, env, force):
+def write_nsd_zone(domain, zonefile, records, ttl, env, force):
 	# On the $ORIGIN line, there's typically a ';' comment at the end explaining
 	# what the $ORIGIN line does. Any further data after the domain confuses
 	# ldns-signzone, however. It used to say '; default zone domain'.
@@ -488,7 +496,7 @@ def write_nsd_zone(domain, zonefile, records, env, force):
 
 	zone = """
 $ORIGIN {domain}.
-$TTL 86400          ; default time to live
+$TTL {ttl}          ; default time to live
 
 @ IN SOA ns1.{primary_domain}. hostmaster.{primary_domain}. (
            __SERIAL__     ; serial number
@@ -500,7 +508,7 @@ $TTL 86400          ; default time to live
 """
 
 	# Replace replacement strings.
-	zone = zone.format(domain=domain, primary_domain=env["PRIMARY_HOSTNAME"])
+	zone = zone.format(domain=domain, primary_domain=env["PRIMARY_HOSTNAME"], ttl=ttl)
 
 	# Add records.
 	for subdomain, querytype, value, _explanation in records:
@@ -1058,6 +1066,40 @@ def set_secondary_dns(hostnames, env):
 	else:
 		# Clear.
 		set_custom_dns_record("_secondary_nameserver", "A", None, "set", env)
+
+	# Apply.
+	return do_dns_update(env)
+
+########################################################################
+
+def get_zone_ttls(env):
+	# Returns a dict mapping zone names to the TTL chosen for that zone.
+	# Zones not in the dict use DEFAULT_ZONE_TTL.
+	try:
+		with open(os.path.join(env['STORAGE_ROOT'], 'dns/zone_ttl.yaml'), encoding="utf-8") as f:
+			ttls = rtyaml.load(f)
+		if not isinstance(ttls, dict): raise ValueError # caught below
+	except:
+		return { }
+	return { zone: int(ttl) for zone, ttl in ttls.items() }
+
+def set_zone_ttl(zone, ttl, env):
+	# Sets the default TTL of a zone. A ttl of None resets it to DEFAULT_ZONE_TTL.
+	if zone not in [z for z, _fn in get_dns_zones(env)]:
+		msg = f"{zone} is not a domain name that corresponds to a zone."
+		raise ValueError(msg)
+
+	ttls = get_zone_ttls(env)
+	if ttl is None or ttl == DEFAULT_ZONE_TTL:
+		ttls.pop(zone, None)
+	else:
+		if not isinstance(ttl, int) or not (MIN_ZONE_TTL <= ttl <= MAX_ZONE_TTL):
+			msg = f"TTL must be a number of seconds between {MIN_ZONE_TTL} and {MAX_ZONE_TTL}."
+			raise ValueError(msg)
+		ttls[zone] = ttl
+
+	with open(os.path.join(env['STORAGE_ROOT'], 'dns/zone_ttl.yaml'), "w", encoding="utf-8") as f:
+		f.write(rtyaml.dump(dict(sorted(ttls.items()))))
 
 	# Apply.
 	return do_dns_update(env)

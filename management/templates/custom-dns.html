@@ -75,6 +75,34 @@
   </tbody>
 </table>
 
+<h3>Zone TTL</h3>
+
+<p>The TTL (time to live) tells other DNS servers how long they may cache the records of a domain. The default is one day (86400 seconds). Lower it, e.g. to 300 seconds, a day before moving a domain or changing records so the change takes effect quickly, then raise it again afterwards.</p>
+
+<form class="form-horizontal" role="form" onsubmit="do_set_zone_ttl(); return false;">
+  <div class="form-group">
+    <label for="zonettlZone" class="col-sm-1 control-label">Domain</label>
+    <div class="col-sm-10">
+      <select id="zonettlZone" class="form-control" style="max-width: 400px" onchange="show_selected_zone_ttl()"> </select>
+    </div>
+  </div>
+  <div class="form-group">
+    <label for="zonettlValue" class="col-sm-1 control-label">TTL</label>
+    <div class="col-sm-10">
+      <table style="max-width: 400px"><tr><td>
+        <input type="number" class="form-control" id="zonettlValue" min="60" max="604800" step="1">
+      </td><td style="padding: 0 1em;">seconds</td></tr></table>
+      <div class="text-info" style="margin-top: .5em">Between 60 (one minute) and 604800 (one week). Common values: 300 (5 minutes), 3600 (1 hour), 86400 (1 day).</div>
+    </div>
+  </div>
+  <div class="form-group">
+    <div class="col-sm-offset-1 col-sm-11">
+      <button type="submit" class="btn btn-primary">Set TTL</button>
+      <button type="button" class="btn btn-default" onclick="do_set_zone_ttl(true)">Reset to Default</button>
+    </div>
+  </div>
+</form>
+
 <h3>Using a secondary nameserver</h3>
 
 <p>If your TLD requires you to have two separate nameservers, you can either set up <a href="#external_dns">external DNS</a> and ignore the DNS server on this box entirely, or use the DNS server on this box but add a secondary (aka &ldquo;slave&rdquo;) nameserver.</p>
@@ -190,6 +218,47 @@ function show_custom_dns() {
 
   show_current_custom_dns();
   show_customdns_rtype_hint();
+  show_zone_ttls();
+}
+
+function show_zone_ttls() {
+  api(
+    "/dns/ttl",
+    "GET",
+    { },
+    function(data) {
+      window.miab_zone_ttls = data;
+      var selected = $('#zonettlZone').val();
+      $('#zonettlZone').text('');
+      for (var zone in data) {
+        $('#zonettlZone').append($('<option/>').attr('value', zone).text(zone + " (" + data[zone] + "s)"));
+      }
+      if (selected && selected in data)
+        $('#zonettlZone').val(selected);
+      show_selected_zone_ttl();
+    });
+}
+
+function show_selected_zone_ttl() {
+  var zone = $('#zonettlZone').val();
+  if (zone && window.miab_zone_ttls)
+    $('#zonettlValue').val(window.miab_zone_ttls[zone]);
+}
+
+function do_set_zone_ttl(reset) {
+  var zone = $('#zonettlZone').val();
+  api(
+    "/dns/ttl/" + zone,
+    reset ? "DELETE" : "POST",
+    reset ? { } : { ttl: $('#zonettlValue').val() },
+    function(data) {
+      show_zone_ttls();
+      if (data == "") return; // nothing updated
+      show_modal_error("Zone TTL", $("<pre/>").text(data));
+    },
+    function(err) {
+      show_modal_error("Zone TTL (Error)", $("<pre/>").text(err));
+    });
 }
 
 function show_current_custom_dns() {
