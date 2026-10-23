@@ -738,6 +738,109 @@ paths:
             text/html:
               schema:
                 type: string
+  /dns/ttl:
+    get:
+      tags:
+        - DNS
+      summary: Get DNS zone TTLs
+      description: Returns the default TTL, in seconds, of each DNS zone.
+      operationId: getDnsZoneTtls
+      x-codeSamples:
+        - lang: curl
+          source: |
+            curl -X GET "https://{host}/admin/dns/ttl" \
+              -u "<email>:<password>"
+      responses:
+        200:
+          description: Successful operation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DNSZoneTtlsResponse'
+        403:
+          description: Forbidden
+          content:
+            text/html:
+              schema:
+                type: string
+  /dns/ttl/{zone}:
+    parameters:
+      - in: path
+        name: zone
+        schema:
+          $ref: '#/components/schemas/Hostname'
+        required: true
+        description: Zone
+    post:
+      tags:
+        - DNS
+      summary: Set DNS zone TTL
+      description: Sets the default TTL of a DNS zone.
+      operationId: setDnsZoneTtl
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/DNSZoneTtlSetRequest'
+            example:
+              ttl: 300
+      x-codeSamples:
+        - lang: curl
+          source: |
+            curl -X POST "https://{host}/admin/dns/ttl/<zone>" \
+              -d "ttl=<integer>" \
+              -u "<email>:<password>"
+      responses:
+        200:
+          description: Successful operation
+          content:
+            text/html:
+              schema:
+                $ref: '#/components/schemas/DNSUpdateResponse'
+        400:
+          description: Bad request
+          content:
+            text/html:
+              schema:
+                type: string
+                example: TTL must be a number of seconds between 60 and 604800.
+        403:
+          description: Forbidden
+          content:
+            text/html:
+              schema:
+                type: string
+    delete:
+      tags:
+        - DNS
+      summary: Reset DNS zone TTL
+      description: Resets the TTL of a DNS zone to the default (86400 seconds).
+      operationId: resetDnsZoneTtl
+      x-codeSamples:
+        - lang: curl
+          source: |
+            curl -X DELETE "https://{host}/admin/dns/ttl/<zone>" \
+              -u "<email>:<password>"
+      responses:
+        200:
+          description: Successful operation
+          content:
+            text/html:
+              schema:
+                $ref: '#/components/schemas/DNSUpdateResponse'
+        400:
+          description: Bad request
+          content:
+            text/html:
+              schema:
+                type: string
+        403:
+          description: Forbidden
+          content:
+            text/html:
+              schema:
+                type: string
   /dns/zones:
     get:
       tags:
@@ -2104,6 +2207,25 @@ components:
       description: DNS zones response.
     DNSZonefileResponse:
       type: string
+    DNSZoneTtlsResponse:
+      type: object
+      additionalProperties:
+        type: integer
+      example:
+        example.com: 86400
+      description: Map of zones to their TTL in seconds.
+    DNSZoneTtlSetRequest:
+      type: object
+      required:
+        - ttl
+      properties:
+        ttl:
+          type: integer
+          minimum: 60
+          maximum: 604800
+          example: 300
+          description: TTL in seconds.
+      description: DNS zone TTL set request.
     DNSSecondaryNameserverResponse:
       type: object
       required:

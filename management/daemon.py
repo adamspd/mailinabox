@@ -323,6 +323,28 @@ def dns_set_secondary_nameserver():
 	except ValueError as e:
 		return (str(e), 400)
 
+@app.route('/dns/ttl')
+@authorized_personnel_only
+def dns_get_zone_ttls():
+	from dns_update import get_dns_zones, get_zone_ttls, DEFAULT_ZONE_TTL
+	ttls = get_zone_ttls(env)
+	return json_response({ zone: ttls.get(zone, DEFAULT_ZONE_TTL) for zone, _fn in get_dns_zones(env) })
+
+@app.route('/dns/ttl/<zone>', methods=['POST', 'DELETE'])
+@authorized_personnel_only
+def dns_set_zone_ttl(zone):
+	from dns_update import set_zone_ttl
+	try:
+		ttl = None
+		if request.method == 'POST':
+			try:
+				ttl = int(request.form.get('ttl', ''))
+			except ValueError:
+				return ("TTL must be a whole number of seconds.", 400)
+		return set_zone_ttl(zone, ttl, env)
+	except ValueError as e:
+		return (str(e), 400)
+
 @app.route('/dns/custom')
 @authorized_personnel_only
 def dns_get_records(qname=None, rtype=None):
